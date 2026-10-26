@@ -1,0 +1,1 @@
+- [3D preview compatibility](3d-preview-compatibility.md) — provide a non-WebGL renderer fallback for interactive cube previews.

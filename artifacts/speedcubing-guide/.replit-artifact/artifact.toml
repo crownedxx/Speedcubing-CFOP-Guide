@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Speedcubing CFOP Guide"
+description = "A detailed, interactive speedcubing guide to CFOP, including move notation, F2L pair insertion, all OLL and PLL cases, two-look methods, and a rotatable 3D cube that previews algorithms."
+version = "1.0.0"
+id = "artifacts/speedcubing-guide"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20685
+
+[services.development]
+run = "pnpm --filter @workspace/speedcubing-guide run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/speedcubing-guide", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/speedcubing-guide/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20685"
+BASE_PATH = "/"
