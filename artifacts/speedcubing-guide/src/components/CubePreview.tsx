@@ -97,6 +97,11 @@ function roundAngle(value: number) {
   return Math.round(value / (Math.PI / 2)) * (Math.PI / 2);
 }
 
+function invertMove(token: string) {
+  if (token.includes('2')) return token;
+  return token.includes("'") ? token.replace("'", '') : `${token}'`;
+}
+
 export function CubePreview({ algorithm, caseName }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -116,11 +121,12 @@ export function CubePreview({ algorithm, caseName }: Props) {
   const speedRef = useRef(speed);
   const stepRef = useRef(step);
   const playingRef = useRef(playing);
-  const algorithmRef = useRef(algorithm);
+  const algorithmRef = useRef<string | null>(null);
   speedRef.current = speed;
   stepRef.current = step;
   playingRef.current = playing;
   const moves = useMemo(() => algorithm.trim().split(/\s+/).filter(Boolean), [algorithm]);
+  const setupMoves = useMemo(() => moves.slice().reverse().map(invertMove), [moves]);
 
   useEffect(() => {
     const mount = mountRef.current;
@@ -269,6 +275,25 @@ export function CubePreview({ algorithm, caseName }: Props) {
     const selected = piecesRef.current.filter((piece) => parsed.layers.some((layer) => Math.abs(piece.position.getComponent(axisIndex) - layer * unit) < unit * .3));
     selected.forEach((piece) => pivot.attach(piece));
     const axis = new THREE.Vector3(parsed.axis === 'x' ? 1 : 0, parsed.axis === 'y' ? 1 : 0, parsed.axis === 'z' ? 1 : 0);
+    const settle = () => {
+      [...pivot.children].forEach((piece) => {
+        root.attach(piece);
+        piece.position.set(
+          Math.round(piece.position.x / unit) * unit,
+          Math.round(piece.position.y / unit) * unit,
+          Math.round(piece.position.z / unit) * unit,
+        );
+        const euler = new THREE.Euler().setFromQuaternion(piece.quaternion);
+        piece.quaternion.setFromEuler(new THREE.Euler(roundAngle(euler.x), roundAngle(euler.y), roundAngle(euler.z)));
+      });
+      root.remove(pivot);
+      resolve();
+    };
+    if (duration <= 0) {
+      pivot.setRotationFromAxisAngle(axis, parsed.angle);
+      settle();
+      return;
+    }
     const start = performance.now();
     const total = duration / speedRef.current;
     const animate = (now: number) => {
@@ -276,33 +301,24 @@ export function CubePreview({ algorithm, caseName }: Props) {
       const eased = 1 - Math.pow(1 - progress, 3);
       pivot.setRotationFromAxisAngle(axis, parsed.angle * eased);
       if (progress < 1) requestAnimationFrame(animate);
-      else {
-        [...pivot.children].forEach((piece) => {
-          root.attach(piece);
-          piece.position.set(
-            Math.round(piece.position.x / unit) * unit,
-            Math.round(piece.position.y / unit) * unit,
-            Math.round(piece.position.z / unit) * unit,
-          );
-          const euler = new THREE.Euler().setFromQuaternion(piece.quaternion);
-          piece.quaternion.setFromEuler(new THREE.Euler(roundAngle(euler.x), roundAngle(euler.y), roundAngle(euler.z)));
-        });
-        root.remove(pivot);
-        resolve();
-      }
+      else settle();
     };
     requestAnimationFrame(animate);
   }), []);
 
+  const prepareCase = useCallback(async () => {
+    resetCube();
+    setStep(0);
+    for (const move of setupMoves) await turn(move, 0);
+  }, [resetCube, setupMoves, turn]);
+
   useEffect(() => {
     if (!ready) return;
-    if (algorithmRef.current !== algorithm) {
-      algorithmRef.current = algorithm;
-      setPlaying(false);
-      resetCube();
-      setStep(0);
-    }
-  }, [algorithm, ready, resetCube]);
+    if (algorithmRef.current === algorithm) return;
+    algorithmRef.current = algorithm;
+    setPlaying(false);
+    void prepareCase();
+  }, [algorithm, ready, prepareCase]);
 
   const stepForward = useCallback(async () => {
     const current = stepRef.current;
@@ -313,18 +329,16 @@ export function CubePreview({ algorithm, caseName }: Props) {
   const stepBack = useCallback(async () => {
     const target = Math.max(0, stepRef.current - 1);
     setPlaying(false);
-    resetCube();
-    setStep(0);
+    await prepareCase();
     for (let i = 0; i < target; i++) {
       await turn(moves[i], 70);
       setStep(i + 1);
     }
-  }, [moves, resetCube, turn]);
+  }, [moves, prepareCase, turn]);
   const reset = useCallback(() => {
     setPlaying(false);
-    resetCube();
-    setStep(0);
-  }, [resetCube]);
+    void prepareCase();
+  }, [prepareCase]);
 
   useEffect(() => {
     if (!playing) return;
@@ -356,22 +370,27 @@ export function CubePreview({ algorithm, caseName }: Props) {
           <div><span className="eyebrow">ACTIVE LESSON</span><strong data-testid="cube-case-name">{caseName}</strong></div>
           <div className="current-move"><span className="eyebrow">CURRENT MOVE</span><strong className="algorithm" data-testid="cube-current-move">{currentMove}</strong></div>
         </div>
+        <div className="cube-case-setup" data-testid="cube-case-setup">
+          <div className="cube-case-setup-heading"><span className="eyebrow">GENERATED CASE SETUP</span><span>{setupMoves.length} moves</span></div>
+          <code className="algorithm" data-testid="cube-case-setup-algorithm">{setupMoves.join(' ') || 'Solved state'}</code>
+          <p>Apply this setup from solved; the selected algorithm solves the previewed case.</p>
+        </div>
         <div className="move-track" aria-label={`Algorithm progress, ${step} of ${moves.length} moves`}>
           {moves.map((move, index) => <button type="button" key={`${index}-${move}`} onClick={async () => {
             setPlaying(false);
             if (index < stepRef.current) {
-              resetCube(); setStep(0);
+              await prepareCase();
               for (let i = 0; i <= index; i++) { await turn(moves[i], 100); setStep(i + 1); }
             } else {
               for (let i = stepRef.current; i <= index; i++) { await turn(moves[i]); setStep(i + 1); }
             }
-          }} aria-label={`Jump to move ${index + 1}: ${move}`} data-testid={`cube-move-${index}`} className={index < step ? 'done' : index === step ? 'next' : ''}>{move}</button>)}
+          }} disabled={algorithmRef.current !== algorithm} aria-label={`Jump to move ${index + 1}: ${move}`} data-testid={`cube-move-${index}`} className={index < step ? 'done' : index === step ? 'next' : ''}>{move}</button>)}
         </div>
         <div className="cube-control-row">
           <div className="transport">
-            <button type="button" onClick={stepBack} aria-label="Step backward" data-testid="cube-step-back"><ChevronLeft size={17} /></button>
-            <button type="button" onClick={() => setPlaying(!playing)} className="play-button" aria-label={playing ? 'Pause algorithm' : 'Play algorithm'} data-testid="cube-play">{playing ? <Pause size={16} /> : <Play size={16} fill="currentColor" />}</button>
-            <button type="button" onClick={stepForward} aria-label="Step forward" data-testid="cube-step-forward"><ChevronRight size={17} /></button>
+            <button type="button" onClick={stepBack} disabled={algorithmRef.current !== algorithm} aria-label="Step backward" data-testid="cube-step-back"><ChevronLeft size={17} /></button>
+            <button type="button" onClick={() => setPlaying(!playing)} disabled={algorithmRef.current !== algorithm} className="play-button" aria-label={playing ? 'Pause algorithm' : 'Play algorithm'} data-testid="cube-play">{playing ? <Pause size={16} /> : <Play size={16} fill="currentColor" />}</button>
+            <button type="button" onClick={stepForward} disabled={algorithmRef.current !== algorithm} aria-label="Step forward" data-testid="cube-step-forward"><ChevronRight size={17} /></button>
             <button type="button" onClick={reset} aria-label="Reset cube" data-testid="cube-reset"><RotateCcw size={15} /></button>
           </div>
           <label className="speed-control"><span className="eyebrow">SPEED</span><select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} aria-label="Animation speed" data-testid="cube-speed"><option value={0.6}>0.6×</option><option value={1}>1×</option><option value={1.5}>1.5×</option></select></label>
